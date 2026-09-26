@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-public/
+*.tsbuildinfo
+.env*
+!.env.example
+!.env.public
+public/portraits/
