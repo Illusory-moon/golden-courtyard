@@ -58,6 +58,8 @@ test('行动先说简短概述，具体经过可展开；旧记录仍可读', ()
   assert.match(detail, /擦净桌面/);
   const oldDetail = renderToStaticMarkup(createElement(SceneDetail, { scene: action, onClose: () => {} }));
   assert.match(oldDetail, /我做了什么<\/h3><p>整理长桌<\/p>/);
+  const shortDetail = renderToStaticMarkup(createElement(SceneDetail, { scene: { ...action, steps: [] }, onClose: () => {} }));
+  assert.doesNotMatch(shortDetail, /看看具体经过/);
   const pending = renderToStaticMarkup(createElement(SceneDetail, { scene: { ...action, kind: 'pending' }, onClose: () => {} }));
   assert.doesNotMatch(pending, /我做了什么/);
 });
@@ -80,4 +82,15 @@ test('共同晚饭展示到场、缺席和实际对话', () => {
   const page = renderWorld(world);
   assert.match(page, /共同晚饭 1 场/);
   assert.match(page, /到场 2 人 · 缺席 1 人/);
+});
+
+test('有两天记录时显示可回看的日期滑杆', () => {
+  const world = createWorld();
+  world.day = 2;
+  world.slot = 1;
+  world.scenes.push({ ...intent, kind: 'action', id: 'day-1', day: 1, slot: 0, actorId: 'kevin', objectResult: null, encounterStatus: null });
+  world.scenes.push({ ...intent, kind: 'action', id: 'day-2', day: 2, slot: 0, actorId: 'kevin', objectResult: null, encounterStatus: null });
+  const page = renderWorld(world);
+  assert.match(page, /回看第 2 天/);
+  assert.match(page, /id="day-timeline" type="range" min="1" max="2"/);
 });

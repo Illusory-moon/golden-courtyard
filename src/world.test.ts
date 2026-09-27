@@ -3,7 +3,7 @@ import test from 'node:test';
 import { chooseIntent, createDinner, createEncounters } from './ai';
 import { PEOPLE } from './people';
 import { OFFICIAL_RELATIONSHIPS, relationshipsFrom } from './relationships';
-import { applyPhase, createWorld, isWorld, socialFor, type DinnerScene, type EncounterScene, type Intent, type World } from './world';
+import { applyPhase, createWorld, dayHighlights, isWorld, sanitizeWorld, socialFor, worldAtDay, type DinnerScene, type EncounterScene, type Intent, type World } from './world';
 
 const basicIntent: Intent = {
   placeId: 'garden', activity: '整理花圃', goal: '清出一小块空地',
@@ -26,6 +26,24 @@ test('新庭院从各自熟悉的地点开始', () => {
   assert.equal(world.residents.eden.placeId, 'lounge');
 });
 
+test('损坏的地点、人物和单条场景可修复而不丢整座庭院', () => {
+  const world = createWorld();
+  world.residents.kevin.placeId = 'missing' as World['residents']['kevin']['placeId'];
+  world.items.push({ id: 'bad', name: '坏物品', detail: '记录', placeId: 'missing' as World['items'][number]['placeId'], updatedBy: null });
+  world.items = world.items.filter((item) => item.id !== 'board');
+  world.items[0].history = 'broken' as unknown as World['items'][number]['history'];
+  world.scenes.push({ ...basicIntent, kind: 'action', id: 'bad-action', day: 1, slot: 0, actorId: 'missing' as 'kevin', objectResult: null, encounterStatus: null });
+  world.scenes.push({ ...basicIntent, kind: 'action', id: 'good-action', day: 1, slot: 0, actorId: 'elysia', objectResult: null, encounterStatus: null });
+  assert.ok(isWorld(world));
+  const clean = sanitizeWorld(world);
+  assert.equal(clean.residents.kevin.placeId, 'garden');
+  assert.deepEqual(clean.items.map((item) => item.id).includes('bad'), false);
+  assert.equal(clean.items.find((item) => item.id === 'board')?.detail, '今天还没有留言。');
+  assert.equal(clean.items[0].history, undefined);
+  assert.deepEqual(clean.scenes.map((scene) => scene.id), ['good-action']);
+  assert.equal(world.scenes.length, 2);
+});
+
 test('物品与项目跨时段保留，后续行动能更新同地点物品', () => {
   const first = readyWorld();
   first.pending.mobius = {
@@ -46,6 +64,7 @@ test('物品与项目跨时段保留，后续行动能更新同地点物品', ()
   };
   const afterSecond = applyPhase(afterFirst, []);
   assert.equal(afterSecond.items.find((entry) => entry.id === item.id)?.detail, 'A 杯露白，B 杯仍未发芽。');
+  assert.deepEqual(afterSecond.items.find((entry) => entry.id === item.id)?.history?.map((entry) => entry.detail), ['A 杯有光，B 杯遮光，均未发芽。', 'A 杯露白，B 杯仍未发芽。']);
   assert.equal(afterSecond.residents.mobius.project?.note, '完成第一次观察。');
   assert.equal(afterSecond.scenes.filter((scene) => scene.kind === 'action' && scene.actorId === 'mobius').length, 2);
 });
@@ -111,6 +130,43 @@ test('夜晚结束后进入次日清晨，行动和物品痕迹仍在', () => {
   assert.equal(world.scenes.at(-1)?.kind, 'dinner');
   assert.equal(world.items.find((item) => item.id === 'piano')?.detail, '琴谱留在谱架上。');
   assert.deepEqual(world.pending, {});
+});
+
+test('每日简报只在晚饭记录形成后，根据真实场景给出事实', () => {
+  const world = createWorld();
+  assert.deepEqual(dayHighlights(world, 1), []);
+  world.scenes.push({
+    kind: 'dinner', id: 'dinner-1', day: 1, slot: 3, placeId: 'kitchen', title: '晚饭',
+    description: '大家坐在一起。', attendees: ['elysia', 'kevin'],
+    absentees: [{ actorId: 'mobius', reason: '留在实验室' }],
+    lines: [{ actorId: 'elysia', text: '晚上好。' }, { actorId: 'kevin', text: '晚上好。' }],
+  });
+  assert.match(dayHighlights(world, 1)[0], /来了 2 人.*梅比乌斯缺席/);
+  assert.match(dayHighlights(world, 1)[1], /没有留下对话记录/);
+});
+
+test('回看某天时重建居民当晚位置，不改动当前存档', () => {
+  const world = createWorld();
+  world.scenes.push({ ...basicIntent, kind: 'action', id: 'first', day: 1, slot: 0, actorId: 'kevin', placeId: 'studio', objectResult: null, encounterStatus: null });
+  world.scenes.push({ kind: 'dinner', id: 'dinner', day: 1, slot: 3, placeId: 'kitchen', title: '晚饭', description: '吃饭', attendees: ['kevin'], absentees: [], lines: [] });
+  world.scenes.push({ ...basicIntent, kind: 'action', id: 'second', day: 2, slot: 0, actorId: 'kevin', placeId: 'lab', objectResult: null, encounterStatus: null });
+  world.residents.kevin.placeId = 'lab';
+  assert.equal(worldAtDay(world, 1).residents.kevin.placeId, 'kitchen');
+  assert.equal(worldAtDay(world, 2).residents.kevin.placeId, 'lab');
+  assert.equal(world.residents.kevin.placeId, 'lab');
+});
+
+test('两向印象各自保存，旧存档没有印象字段也能继续', () => {
+  const world = readyWorld();
+  delete world.residents.kevin.bonds;
+  world.pending.kevin = { ...basicIntent, bond: { aboutId: 'su', note: '他听得懂没说完的话。' } };
+  world.pending.su = { ...basicIntent, bond: { aboutId: 'kevin', note: '他最近愿意慢一点了。' } };
+  const next = applyPhase(world, []);
+  assert.equal(next.residents.kevin.bonds?.su, '他听得懂没说完的话。');
+  assert.equal(next.residents.su.bonds?.kevin, '他最近愿意慢一点了。');
+  assert.equal(world.residents.kevin.bonds, undefined);
+  const restored = sanitizeWorld(JSON.parse(JSON.stringify(next)) as World);
+  assert.equal(restored.residents.kevin.bonds?.su, '他听得懂没说完的话。');
 });
 
 test('晚饭保留自主出席决定，缺席者不会在对话中发言', async () => {
@@ -225,6 +281,8 @@ test('下一时段能看到未碰面邀约及官方关系，且无需真实 API'
   world.pending.mobius = { ...basicIntent, placeId: 'lab' };
   const next = applyPhase(world, []);
   next.residents.mobius.memory.push('与爱莉希雅相遇：灯泡仍亮，插头已拔下。');
+  next.residents.mobius.bonds = { elysia: '她总能把话题带到意想不到的地方。' };
+  next.items.find((item) => item.id === 'board')!.history?.push({ day: next.day, by: null, detail: '访客留言：今晚有人想吃甜的吗？' });
   const originalFetch = globalThis.fetch;
   let input: Record<string, unknown> | undefined;
   let system = '';
@@ -240,14 +298,37 @@ test('下一时段能看到未碰面邀约及官方关系，且无需真实 API'
     globalThis.fetch = originalFetch;
   }
   assert.deepEqual((input?.receivedInvitations as { fromId: string }[]).map((entry) => entry.fromId), ['elysia']);
+  assert.deepEqual(input?.notesOnBoard, ['今晚有人想吃甜的吗？']);
+  assert.deepEqual(input?.currentBonds, { elysia: '她总能把话题带到意想不到的地方。' });
+  assert.match(JSON.stringify(input?.rules), /没有变化时填 null/);
   assert.ok((input?.memories as string[]).every((entry) => !entry.includes('灯泡仍亮')));
   const relationships = input?.officialRelationships as { label: string; toId: string; daily?: string }[];
   assert.equal(relationships.length, 12);
   assert.ok(relationships.some((entry) => entry.toId === 'elysia' && entry.label === '你胖了'));
   assert.ok(relationships.every((entry) => entry.daily === undefined));
   assert.match(system, /情境中的说法/);
+  assert.match(system, /不必回应/);
+  assert.match(JSON.stringify(input).slice(0, 20), /format/);
   assert.match(system, /从 goal、summary 和 steps 就认出梅比乌斯/);
   assert.match(JSON.stringify(input?.format), /刚才做了什么/);
+});
+
+test('接口限流后保留原提示重试，不误写成 JSON 错误', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: { content: string }[] };
+    requests.push(body.messages[1].content);
+    if (requests.length === 1) return new Response('', { status: 429 });
+    return new Response(JSON.stringify({ output: [{ content: [{ type: 'output_text', text: JSON.stringify(basicIntent) }] }] }), { status: 200 });
+  };
+  try {
+    await chooseIntent(createWorld(), 'elysia', new AbortController().signal);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1], requests[0]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('非主人不能选择改写画架，已占用的物品也不可重复选择', async () => {

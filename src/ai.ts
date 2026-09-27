@@ -15,13 +15,14 @@ const intentSchema = z.object({
   activity: z.string().trim().min(2).max(32),
   goal: z.string().trim().min(4).max(100),
   summary: z.string().trim().min(4).max(60),
-  steps: z.array(z.string().trim().min(4).max(140)).min(2).max(4),
+  steps: z.array(z.string().trim().min(4).max(140)).max(4),
   observation: z.string().trim().min(4).max(140),
   interpretation: z.string().trim().min(4).max(140),
   quote: z.string().trim().min(2).max(100),
   next: z.string().trim().min(4).max(100),
   effort: z.enum(['rest', 'light', 'focus']),
   targetId: z.string().nullable(),
+  bond: z.object({ aboutId: z.string(), note: z.string().trim().min(4).max(80) }).nullable().optional(),
   dinner: z.object({ attend: z.boolean(), reason: z.string().trim().min(2).max(80) }).optional(),
   object: z.object({ id: z.string().nullable(), name: z.string().trim().min(1).max(32), detail: z.string().trim().min(4).max(140) }).nullable(),
   project: projectSchema.nullable(),
@@ -40,6 +41,10 @@ const dinnerSchema = z.object({
 
 interface ChatResponse {
   output?: { type?: string; content?: { type?: string; text?: string }[] }[];
+}
+
+class TransportError extends Error {
+  constructor(message: string, readonly retryable: boolean) { super(message); }
 }
 
 export interface ApiSettings { apiUrl: string; apiKey: string; model: string }
@@ -85,16 +90,22 @@ async function chat(system: string, user: string, signal: AbortSignal): Promise<
   const timeout = AbortSignal.timeout(120_000);
   const settings = loadApiSettings();
   const direct = !!settings && !import.meta.env?.DEV;
-  const response = await fetch(direct ? apiEndpoint(settings.apiUrl) : '/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(direct && settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
-    body: JSON.stringify(direct ? {
-      model: settings.model, input: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      reasoning: { effort: 'low' }, text: { format: { type: 'json_object' } }, max_output_tokens: 1100,
-    } : { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], settings }),
-    signal: AbortSignal.any([signal, timeout]),
-  });
-  if (!response.ok) throw new Error(`AI 接口返回 HTTP ${response.status}`);
+  let response: Response;
+  try {
+    response = await fetch(direct ? apiEndpoint(settings.apiUrl) : '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(direct && settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
+      body: JSON.stringify(direct ? {
+        model: settings.model, input: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        reasoning: { effort: 'low' }, text: { format: { type: 'json_object' } }, max_output_tokens: 1100,
+      } : { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], settings }),
+      signal: AbortSignal.any([signal, timeout]),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new TransportError('AI 接口连接失败或请求超时', true);
+  }
+  if (!response.ok) throw new TransportError(`AI 接口返回 HTTP ${response.status}`, [408, 429, 500, 502, 503, 504].includes(response.status));
   const payload = await response.json() as ChatResponse;
   const content = payload.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.type === 'output_text')?.text;
   if (typeof content !== 'string') throw new Error('AI 没有返回文本');
@@ -119,13 +130,40 @@ function actionPrompt(world: World, id: PersonId): { system: string; user: strin
   const person = personById[id];
   const resident = world.residents[id];
   const social = socialFor(world, id);
+  const boardNotes = world.items.find((item) => item.id === 'board')?.history?.filter((entry) =>
+    entry.day >= world.day - 1 && entry.detail.startsWith('访客留言：')).slice(-2).map((entry) => entry.detail.slice(5)) ?? [];
   const reservedItems = new Set(Object.values(world.pending).map((intent) => intent?.object?.id).filter((itemId): itemId is string => !!itemId));
-  const system = `你正在扮演《崩坏3》逐火十三英桀的日常平行世界角色${person.name}。这是轻松的同住生活，没有战争、死亡、残酷考验或拯救世界的任务。你的决定只代表你自己，其他人可以拒绝邀请。\n角色 soul：\n${formatSoul(SOULS[id])}\n官方关系标签是对每个人的起始印象，不是今天已经发生的事，也不是固定的邀约名单；近期真实经历优先。你可以与任何人互动，也可以独处，不必总找最熟悉的人。共同经历只依据实际对话更新，不能把见面次数当成亲密度。上一时段未碰面的邀约会作为简短留言送达；收到后可以赴约、改约或拒绝，不必为了关系放弃自己的计划。\n请自由选择一件符合自己兴趣、眼前情境与当前时段的生活小事；可以做饭、散步、聊天、练习、创作或休息，不必每轮重复习惯，也不要把别人的工作或作品当成自己的研究题目。只有角色确实主动做实验时才写对象、方法和记录。所有居民在当前时段同时行动，你不能把别人在本时段的行动当成已知，也不能凭空编造上一时段的相遇。写出本人实际做的步骤、看见的结果与自己的想法，不替别人决定或说话；时间不够时不要编造立刻成功。你不能凭空拿到不在所选地点的既有物品。只返回 JSON 对象，不含 Markdown。`;
+  const system = `你正在扮演《崩坏3》逐火十三英桀的日常平行世界角色${person.name}。这是轻松的同住生活，没有战争、死亡、残酷考验或拯救世界的任务。你的决定只代表你自己，其他人可以拒绝邀请。\n角色 soul：\n${formatSoul(SOULS[id])}\n官方关系标签是对每个人的起始印象，不是今天已经发生的事，也不是固定的邀约名单；近期真实经历优先。你可以与任何人互动，也可以独处，不必总找最熟悉的人。共同经历只依据实际对话更新，不能把见面次数当成亲密度。上一时段未碰面的邀约会作为简短留言送达；收到后可以赴约、改约或拒绝，不必为了关系放弃自己的计划。\n请自由选择一件符合自己兴趣、眼前情境与当前时段的生活小事；可以做饭、散步、聊天、练习、创作或休息，不必每轮重复习惯，也不要把别人的工作或作品当成自己的研究题目。只有角色确实主动做实验时才写对象、方法和记录。所有居民在当前时段同时行动，你不能把别人在本时段的行动当成已知，也不能凭空编造上一时段的相遇。写出本人实际做的步骤、看见的结果与自己的想法，不替别人决定或说话；时间不够时不要编造立刻成功。你不能凭空拿到不在所选地点的既有物品。energy 是当前精力，0 最低、4 最高；精力低时优先考虑休息或短小活动，精力高时才适合专注的长事。只返回 JSON 对象，不含 Markdown。`;
   const previousDay = world.slot === 0 ? world.day - 1 : world.day;
   const previousSlot = world.slot === 0 ? 3 : world.slot - 1;
   const missedInvitations = world.scenes.filter((scene): scene is ActionScene => scene.kind === 'action'
     && scene.day === previousDay && scene.slot === previousSlot && scene.encounterStatus === 'left-note');
   const user = JSON.stringify({
+    format: {
+      placeId: '地点 ID', activity: '具体活动短标题', goal: '用本人语气写一两句刚起的念头，可以犹豫、俏皮或直接，不写任务目标',
+      summary: '别人问“刚才做了什么”时，本人会随口给出的简短回答。只说做了哪件事和有意思的结果；不要复盘动作轨迹。例如凯文散步会说“在庭院散了会儿步”，不会说“我避开潮湿的石阶，走到转角活动肩背”',
+      steps: ['若有值得回味的具体片段，写在这里；短小活动一段就够，没什么可讲可以留空数组'],
+      observation: '沿用本人语气，说眼前实际变成了什么样；不替别人决定反应',
+      interpretation: '本人愿意说出来的心情、疑惑或偏爱，不是总结或模型内部推理',
+      quote: '此刻可能脱口而出的一句话，不复述 goal', next: '本人语气说起下次可能做的事，不写项目计划书',
+      effort: 'rest/light/focus', targetId: '想接触的居民 ID 或 null',
+      bond: { aboutId: '最近经历改变了看法的居民 ID', note: '本人语气写一句现在对这个人的印象' },
+      ...(world.slot === 3 ? { dinner: { attend: '是否参加今晚的共同晚饭，true 或 false', reason: '自己想来或缺席的简短理由，不替别人做决定' } } : {}),
+      object: { id: '已有物品 ID；新物品用 null', name: '物品名称', detail: '行动结束后可见状态' },
+      project: { title: '跨时段项目名', note: '当前进展', next: '下一步' },
+    },
+    rules: [
+      'object 和 project 都可以是 null；普通活动不必硬给物品或项目留痕。object 每次最多创建或改变一件；只可改所选地点且 editable 为 true 的物品。别人的私人物品可以看、可以询问，但不能代替主人移动或改写。',
+      'targetId 可以是 null；它表示有意接触对方，若这时段没碰上会留下一条简短邀约。对方上一时段的位置不保证仍准确。',
+      'bond 可以是 null；只在以前真实发生的相处改变了你对某人的看法时写一条，不能写自己，也不能把官方标签改写成空泛的好感宣言。没有变化时填 null。',
+      ...(world.slot === 3 ? ['dinner 是夜晚必填的独立决定。晚饭发生在本次个人行动之后，不改变本次行动的地点；有理由就可以缺席，不要因为想凑齐人数而勉强自己。'] : []),
+      '持续项目要沿用已有标题，除非确实开始一件新事；未推进可填 null。',
+      'goal、summary、steps、observation、interpretation、quote、next 都是本人讲今天的事；字段名只是存档结构，不是写作提纲。每段都带自己的节奏和注意点，不可只让 quote 像本人。自然用第一人称，但别让每句都以“我”开头，也不要照抄 soul 的示例句。',
+      'summary 控制在一小句，像回答朋友，不写“我来到、我看见、我避开”这样的过程，也不写目的、方法、结果三段式。只保留这件事最值得提的一点；细节交给 steps。',
+      'steps 可以是零到四段生活片段。散步、休息、短聊不必凑段数；真正做实验、创作或处理复杂物品时才写清具体经过。不要用“首先、接着、最后”列操作，也不要用“为了确保、经过检查、达到了目标”做报告。普通日常不写实验目的、方法、结果、结论。',
+      '同一项检查、限制或物品状态只在叙事中说一次；object.detail 会单独保存客观结果，不要让 goal、steps、observation 轮流复述它。',
+      'observation 要保留实际发生的具体细节，可写感官感受，但不要把推测写成事实；只有角色确实在做实验时才写必要的实验记录。interpretation 是愿意说出的心情或想法，不是模型内部推理。',
+    ],
     day: world.day,
     time: SLOTS[world.slot],
     dinnerInvitation: world.slot === 3 ? '自己的夜晚行动结束后，餐厨会有一顿共同晚饭。你可以去，也可以不去；独处、疲惫或手头有事都可以是理由。不要替别人决定。' : undefined,
@@ -138,6 +176,8 @@ function actionPrompt(world: World, id: PersonId): { system: string; user: strin
       editable: (!itemOwner(item) || itemOwner(item) === id) && !reservedItems.has(item.id),
     })),
     currentProject: resident.project,
+    currentBonds: resident.bonds ?? {},
+    notesOnBoard: boardNotes,
     memories: resident.memory.filter((entry) => !/^与.+相遇：/.test(entry)).slice(-6),
     officialRelationships: relationshipsFrom(id).map((relation) => ({
       toId: relation.to, to: personById[relation.to].name, label: relation.label,
@@ -151,32 +191,9 @@ function actionPrompt(world: World, id: PersonId): { system: string; user: strin
     unansweredInvitations: missedInvitations.filter((scene) => scene.actorId === id).map((scene) => ({
       toId: scene.targetId, placeId: scene.placeId, activity: scene.activity,
     })),
-    format: {
-      placeId: '地点 ID', activity: '具体活动短标题', goal: '用本人语气写一两句刚起的念头，可以犹豫、俏皮或直接，不写任务目标',
-      summary: '别人问“刚才做了什么”时，本人会随口给出的简短回答。只说做了哪件事和有意思的结果；不要复盘动作轨迹。例如凯文散步会说“在庭院散了会儿步”，不会说“我避开潮湿的石阶，走到转角活动肩背”',
-      steps: ['第一段生活片段：亲手做的动作，加上当时注意到的一点事', '第二段生活片段：顺着现场变化做出的具体选择；像回忆，不像步骤清单'],
-      observation: '沿用本人语气，说眼前实际变成了什么样；不替别人决定反应',
-      interpretation: '本人愿意说出来的心情、疑惑或偏爱，不是总结或模型内部推理',
-      quote: '此刻可能脱口而出的一句话，不复述 goal', next: '本人语气说起下次可能做的事，不写项目计划书',
-      effort: 'rest/light/focus', targetId: '想接触的居民 ID 或 null',
-      ...(world.slot === 3 ? { dinner: { attend: '是否参加今晚的共同晚饭，true 或 false', reason: '自己想来或缺席的简短理由，不替别人做决定' } } : {}),
-      object: { id: '已有物品 ID；新物品用 null', name: '物品名称', detail: '行动结束后可见状态' },
-      project: { title: '跨时段项目名', note: '当前进展', next: '下一步' },
-    },
-    rules: [
-      'object 和 project 都可以是 null；普通活动不必硬给物品或项目留痕。object 每次最多创建或改变一件；只可改所选地点且 editable 为 true 的物品。别人的私人物品可以看、可以询问，但不能代替主人移动或改写。',
-      'targetId 可以是 null；它表示有意接触对方，若这时段没碰上会留下一条简短邀约。对方上一时段的位置不保证仍准确。',
-      ...(world.slot === 3 ? ['dinner 是夜晚必填的独立决定。晚饭发生在本次个人行动之后，不改变本次行动的地点；有理由就可以缺席，不要因为想凑齐人数而勉强自己。'] : []),
-      '持续项目要沿用已有标题，除非确实开始一件新事；未推进可填 null。',
-      'goal、summary、steps、observation、interpretation、quote、next 都是本人讲今天的事；字段名只是存档结构，不是写作提纲。每段都带自己的节奏和注意点，不可只让 quote 像本人。自然用第一人称，但别让每句都以“我”开头，也不要照抄 soul 的示例句。',
-      'summary 控制在一小句，像回答朋友，不写“我来到、我看见、我避开”这样的过程，也不写目的、方法、结果三段式。只保留这件事最值得提的一点；细节交给 steps。',
-      'steps 是连续的两三段生活片段，不要用“首先、接着、最后”列操作，也不要用“为了确保、经过检查、达到了目标”做报告。写动作发生时的手感、停顿或临时决定，普通日常不写实验目的、方法、结果、结论。',
-      '同一项检查、限制或物品状态只在叙事中说一次；object.detail 会单独保存客观结果，不要让 goal、steps、observation 轮流复述它。',
-      'observation 要保留实际发生的具体细节，可写感官感受，但不要把推测写成事实；只有角色确实在做实验时才写必要的实验记录。interpretation 是愿意说出的心情或想法，不是模型内部推理。',
-    ],
   });
   return {
-    system: `${system}\n让读者从 goal、summary 和 steps 就认出${person.name}，不要等到 quote 才出现角色声音；情境样例只示范反应方式，不能照抄或让每一轮重演。动作必须具体，叙述可以轻快、停顿或改主意，按这个人的语气来。object.detail、project.note 等供世界状态使用的字段则客观描述。`,
+    system: `${system}\n让读者从 goal、summary 和 steps 就认出${person.name}，不要等到 quote 才出现角色声音；情境样例只示范反应方式，不能照抄或让每一轮重演。动作必须具体，叙述可以轻快、停顿或改主意，按这个人的语气来。object.detail、project.note 等供世界状态使用的字段则客观描述。公告板纸条是访客留下的痕迹，只有本时段去庭院读过才能引用；不必阅读，也不必回应。`,
     user,
   };
 }
@@ -185,14 +202,18 @@ export async function chooseIntent(world: World, id: PersonId, signal: AbortSign
   const { system, user } = actionPrompt(world, id);
   const reservedItems = new Set(Object.values(world.pending).map((intent) => intent?.object?.id).filter((itemId): itemId is string => !!itemId));
   let error: Error | null = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  let formatFailures = 0;
+  let transportFailures = 0;
+  let feedback = '';
+  while (formatFailures < 2) {
     if (signal.aborted) throw new DOMException('已暂停', 'AbortError');
     try {
-      const value = await chat(system, attempt ? `${user}\n上次输出不合格式：${error?.message}。请修正 JSON。` : user, signal);
+      const value = await chat(system, `${user}${feedback}`, signal);
       const parsed = intentSchema.parse(value);
       if (world.slot === 3 && !parsed.dinner) throw new Error('夜晚缺少晚饭决定');
       if (!PLACES.some((place) => place.id === parsed.placeId)) throw new Error('地点不存在');
       if (parsed.targetId !== null && (!PEOPLE.some((person) => person.id === parsed.targetId) || parsed.targetId === id)) throw new Error('邀请对象不存在');
+      if (parsed.bond && (!PEOPLE.some((person) => person.id === parsed.bond?.aboutId) || parsed.bond.aboutId === id)) throw new Error('印象对象不存在');
       if (parsed.object?.id) {
         const item = world.items.find((entry) => entry.id === parsed.object?.id);
         if (!item || item.placeId !== parsed.placeId) throw new Error('物品不在选择的地点');
@@ -203,6 +224,19 @@ export async function chooseIntent(world: World, id: PersonId, signal: AbortSign
     } catch (caught) {
       if (signal.aborted) throw caught;
       error = caught instanceof Error ? caught : new Error('模型输出无效');
+      if (error instanceof TransportError) {
+        if (!error.retryable || transportFailures >= 2) break;
+        transportFailures += 1;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 600 * 3 ** (transportFailures - 1));
+          const abort = () => { clearTimeout(timer); reject(new DOMException('已暂停', 'AbortError')); };
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
+        });
+      } else {
+        formatFailures += 1;
+        feedback = `\n上次输出不合格式：${error.message}。请修正 JSON。`;
+      }
     }
   }
   throw new Error(`${personById[id].name}暂时无法完成行动：${error?.message}`);

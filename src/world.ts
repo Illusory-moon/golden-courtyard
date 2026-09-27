@@ -1,4 +1,4 @@
-import { PEOPLE, type PersonId, type PlaceId } from './people';
+import { PEOPLE, personById, placeById, type PersonId, type PlaceId } from './people';
 
 export const SLOTS = ['早晨', '午后', '傍晚', '夜晚'] as const;
 export type SlotIndex = 0 | 1 | 2 | 3;
@@ -10,6 +10,7 @@ export interface Item {
   placeId: PlaceId;
   updatedBy: PersonId | null;
   ownerId?: PersonId;
+  history?: { day: number; by: PersonId | null; detail: string }[];
 }
 
 export interface Project {
@@ -23,6 +24,7 @@ export interface Resident {
   energy: number;
   project: Project | null;
   memory: string[];
+  bonds?: Partial<Record<PersonId, string>>;
 }
 
 export interface Intent {
@@ -37,6 +39,7 @@ export interface Intent {
   next: string;
   effort: 'rest' | 'light' | 'focus';
   targetId: PersonId | null;
+  bond?: { aboutId: PersonId; note: string } | null;
   dinner?: { attend: boolean; reason: string };
   object: { id: string | null; name: string; detail: string } | null;
   project: Project | null;
@@ -114,9 +117,10 @@ export function itemOwner(item: Item): PersonId | null {
 export function createWorld(): World {
   const residents = {} as Record<PersonId, Resident>;
   PEOPLE.forEach((person) => {
-    residents[person.id] = { placeId: START_PLACES[person.id], energy: 3, project: null, memory: [] };
+    residents[person.id] = { placeId: START_PLACES[person.id], energy: 3, project: null, memory: [], bonds: {} };
   });
-  return { version: 1, day: 1, slot: 0, residents, items: structuredClone(START_ITEMS), scenes: [], pending: {} };
+  const items = START_ITEMS.map((item) => ({ ...item, history: [{ day: 0, by: null, detail: item.detail }] }));
+  return { version: 1, day: 1, slot: 0, residents, items, scenes: [], pending: {} };
 }
 
 export function isWorld(value: unknown): value is World {
@@ -124,8 +128,96 @@ export function isWorld(value: unknown): value is World {
   const world = value as Partial<World>;
   return world.version === 1 && Number.isInteger(world.day) && world.day! > 0
     && Number.isInteger(world.slot) && world.slot! >= 0 && world.slot! < SLOTS.length
-    && !!world.residents && Array.isArray(world.items) && Array.isArray(world.scenes)
-    && !!world.pending && PEOPLE.every((person) => !!world.residents?.[person.id]);
+    && !!world.residents && typeof world.residents === 'object' && !Array.isArray(world.residents)
+    && Array.isArray(world.items) && Array.isArray(world.scenes)
+    && !!world.pending && typeof world.pending === 'object' && !Array.isArray(world.pending);
+}
+
+const validPerson = (id: unknown): id is PersonId => typeof id === 'string' && Object.hasOwn(personById, id);
+const validPlace = (id: unknown): id is PlaceId => typeof id === 'string' && Object.hasOwn(placeById, id);
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const project = (value: unknown): value is Project => record(value) && typeof value.title === 'string'
+  && typeof value.note === 'string' && typeof value.next === 'string';
+
+function validIntent(value: unknown): value is Intent {
+  if (!record(value)) return false;
+  return validPlace(value.placeId) && typeof value.activity === 'string' && typeof value.goal === 'string'
+    && (value.summary === undefined || typeof value.summary === 'string')
+    && Array.isArray(value.steps) && value.steps.every((step) => typeof step === 'string')
+    && ['observation', 'interpretation', 'quote', 'next'].every((key) => typeof value[key] === 'string')
+    && ['rest', 'light', 'focus'].includes(String(value.effort))
+    && (value.targetId == null || validPerson(value.targetId))
+    && (value.bond === undefined || value.bond === null || (record(value.bond) && validPerson(value.bond.aboutId) && typeof value.bond.note === 'string'))
+    && (value.dinner === undefined || (record(value.dinner) && typeof value.dinner.attend === 'boolean' && typeof value.dinner.reason === 'string'))
+    && (value.object == null || (record(value.object) && (value.object.id === null || typeof value.object.id === 'string')
+      && typeof value.object.name === 'string' && typeof value.object.detail === 'string'))
+    && (value.project == null || project(value.project));
+}
+
+function validScene(value: unknown): value is Scene {
+  if (!record(value) || !validPlace(value.placeId) || !Number.isInteger(value.day) || !Number.isInteger(value.slot)
+    || !SLOTS[Number(value.slot)] || typeof value.id !== 'string') return false;
+  if (value.kind === 'action') return validPerson(value.actorId) && validIntent(value)
+    && (value.objectResult === null || typeof value.objectResult === 'string')
+    && [null, 'met', 'left-note'].includes(value.encounterStatus as null);
+  if (value.kind === 'encounter' || value.kind === 'dinner') {
+    if (typeof value.title !== 'string' || !Array.isArray(value.lines)
+      || !value.lines.every((line) => record(line) && validPerson(line.actorId) && typeof line.text === 'string')) return false;
+    if (value.kind === 'encounter') return Array.isArray(value.actorIds) && value.actorIds.every(validPerson);
+    return value.placeId === 'kitchen' && value.slot === 3 && typeof value.description === 'string'
+      && Array.isArray(value.attendees) && value.attendees.every(validPerson)
+      && Array.isArray(value.absentees) && value.absentees.every((absence) =>
+        record(absence) && validPerson(absence.actorId) && typeof absence.reason === 'string');
+  }
+  return false;
+}
+
+export function sanitizeWorld(world: World): World {
+  const clean = structuredClone(world);
+  let changed = false;
+  const fresh = createWorld();
+  for (const person of PEOPLE) {
+    const resident: unknown = clean.residents[person.id];
+    if (!record(resident)) { clean.residents[person.id] = fresh.residents[person.id]; changed = true; continue; }
+    if (!validPlace(resident.placeId)) { clean.residents[person.id].placeId = fresh.residents[person.id].placeId; changed = true; }
+    if (typeof resident.energy !== 'number' || !Number.isFinite(resident.energy)) { clean.residents[person.id].energy = 3; changed = true; }
+    if (resident.project != null && !project(resident.project)) { clean.residents[person.id].project = null; changed = true; }
+    if (!Array.isArray(resident.memory) || !resident.memory.every((entry) => typeof entry === 'string')) {
+      clean.residents[person.id].memory = Array.isArray(resident.memory) ? resident.memory.filter((entry): entry is string => typeof entry === 'string') : [];
+      changed = true;
+    }
+    if (resident.bonds !== undefined && (!record(resident.bonds) || Object.entries(resident.bonds).some(([id, note]) => !validPerson(id) || typeof note !== 'string'))) {
+      clean.residents[person.id].bonds = Object.fromEntries(record(resident.bonds) ? Object.entries(resident.bonds).filter(([id, note]) => validPerson(id) && typeof note === 'string') : []);
+      changed = true;
+    }
+  }
+  const items = clean.items.filter((item) => record(item) && typeof item.id === 'string' && typeof item.name === 'string'
+    && typeof item.detail === 'string' && validPlace(item.placeId)
+    && (item.updatedBy === null || validPerson(item.updatedBy))
+    && (item.ownerId === undefined || validPerson(item.ownerId)));
+  for (const item of items) {
+    if (item.history === undefined) continue;
+    const history = Array.isArray(item.history) ? item.history.filter((entry) => record(entry) && Number.isInteger(entry.day)
+      && entry.day >= 0 && (entry.by === null || validPerson(entry.by)) && typeof entry.detail === 'string') : [];
+    if (!history.length || history.length !== item.history.length) {
+      if (history.length) item.history = history;
+      else delete item.history;
+      changed = true;
+    }
+  }
+  if (!items.some((item) => item.id === 'board')) {
+    items.push(fresh.items.find((item) => item.id === 'board')!);
+    changed = true;
+  }
+  const scenes = clean.scenes.filter(validScene);
+  const pending = Object.fromEntries(Object.entries(clean.pending).filter(([id, intent]) => validPerson(id) && validIntent(intent))) as World['pending'];
+  if (items.length !== clean.items.length || scenes.length !== clean.scenes.length
+    || Object.keys(pending).length !== Object.keys(clean.pending).length) changed = true;
+  if (!changed) return world;
+  clean.items = items;
+  clean.scenes = scenes;
+  clean.pending = pending;
+  return clean;
 }
 
 export function socialFor(world: World, id: PersonId): Partial<Record<PersonId, { meetings: number; last: string }>> {
@@ -148,6 +240,38 @@ export function socialFor(world: World, id: PersonId): Partial<Record<PersonId, 
   return social;
 }
 
+export function dayHighlights(world: World, day: number): string[] {
+  const scenes = world.scenes.filter((scene) => scene.day === day);
+  const dinner = scenes.find((scene): scene is DinnerScene => scene.kind === 'dinner');
+  if (!dinner) return [];
+  const highlights: string[] = [
+    `晚饭来了 ${dinner.attendees.length} 人${dinner.absentees.length ? `，${dinner.absentees.map(({ actorId }) => personById[actorId].name).join('、')}缺席` : '，没有人缺席'}。`,
+  ];
+  const speakers = new Set(scenes.flatMap((scene) => scene.kind === 'action' ? [] : scene.lines.map((line) => line.actorId)));
+  const quiet = PEOPLE.filter((person) => !speakers.has(person.id));
+  if (quiet.length) highlights.push(quiet.length <= 3
+    ? `${quiet.map((person) => person.name).join('、')}今天没有留下对话记录。`
+    : `今天有 ${quiet.length} 人没有留下对话记录。`);
+  const firstVisit = scenes.find((scene) => scene.kind === 'action' && !world.scenes.some((earlier) =>
+    earlier.kind === 'action' && earlier.day < day && earlier.actorId === scene.actorId && earlier.placeId === scene.placeId));
+  if (day > 1 && firstVisit?.kind === 'action') highlights.push(`${personById[firstVisit.actorId].name}首次在${placeById[firstVisit.placeId].name}留下行动记录。`);
+  const changed = scenes.filter((scene) => scene.kind === 'action' && scene.objectResult).length;
+  if (changed) highlights.push(`今天有 ${changed} 件物品留下了新的变化。`);
+  return highlights;
+}
+
+export function worldAtDay(world: World, day: number): World {
+  const residents = createWorld().residents;
+  for (const scene of world.scenes) {
+    if (scene.day > day) continue;
+    if (scene.kind === 'action') residents[scene.actorId].placeId = scene.placeId;
+    if (scene.kind === 'dinner') {
+      for (const id of scene.attendees) residents[id].placeId = 'kitchen';
+    }
+  }
+  return { ...world, residents };
+}
+
 export function applyPhase(world: World, encounters: EncounterScene[], dinner?: DinnerScene): World {
   const next = structuredClone(world);
   if (world.slot === 3 && !dinner) throw new Error('夜晚缺少晚餐记录');
@@ -162,6 +286,7 @@ export function applyPhase(world: World, encounters: EncounterScene[], dinner?: 
     resident.placeId = intent.placeId;
     resident.energy = Math.max(0, Math.min(4, resident.energy + (intent.effort === 'rest' ? 1 : intent.effort === 'focus' ? -1 : 0)));
     if (intent.project) resident.project = intent.project;
+    if (intent.bond && intent.bond.aboutId !== person.id) resident.bonds = { ...resident.bonds, [intent.bond.aboutId]: intent.bond.note };
     const targetReplied = intent.targetId !== null && encounters.some((encounter) =>
       encounter.placeId === intent.placeId
       && encounter.lines.some((line) => line.actorId === person.id)
@@ -180,6 +305,7 @@ export function applyPhase(world: World, encounters: EncounterScene[], dinner?: 
           placeId: intent.placeId,
           updatedBy: person.id,
           ownerId: person.id,
+          history: [{ day: world.day, by: person.id, detail: intent.object.detail }],
         };
         next.items.push(created);
         objectResult = `${created.name}：${created.detail}`;
@@ -199,8 +325,10 @@ export function applyPhase(world: World, encounters: EncounterScene[], dinner?: 
   }
   for (const [id, change] of itemChanges) {
     const item = next.items.find((entry) => entry.id === id)!;
+    const previous = item.detail;
     item.detail = change.detail;
     item.updatedBy = change.actorId;
+    item.history = [...(item.history ?? [{ day: 0, by: null, detail: previous }]), { day: world.day, by: change.actorId, detail: change.detail }];
   }
   next.scenes.push(...encounters);
   for (const encounter of encounters) {
