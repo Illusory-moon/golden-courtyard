@@ -1,10 +1,10 @@
 export const PLACES = [
-  { id: 'garden', name: '庭院', icon: '✿', x: 150, y: 282, tint: '#a8cdbd' },
-  { id: 'hall', name: '门厅', icon: '✧', x: 360, y: 215, tint: '#efc3a6' },
-  { id: 'kitchen', name: '餐厨', icon: '♨', x: 570, y: 148, tint: '#e8c482' },
-  { id: 'lounge', name: '起居室', icon: '♫', x: 770, y: 170, tint: '#b7cadd' },
-  { id: 'lab', name: '实验室', icon: '◇', x: 580, y: 360, tint: '#b3d3d0' },
-  { id: 'studio', name: '画室', icon: '✎', x: 780, y: 356, tint: '#d4b9cf' },
+  { id: 'garden', name: '庭院' },
+  { id: 'hall', name: '门厅' },
+  { id: 'kitchen', name: '餐厨' },
+  { id: 'lounge', name: '起居室' },
+  { id: 'lab', name: '实验室' },
+  { id: 'studio', name: '画室' },
 ] as const;
 
 export type PlaceId = typeof PLACES[number]['id'];

@@ -6,13 +6,13 @@
 
 关系轨迹收录米哈游[《英桀关系网》](https://webstatic.mihoyo.com/bh3/event/e20200310rolemap/index.html)中十三位英桀对其余十二人的有向称呼，共 156 条；格蕾修对爱莉希雅的空引号也按原图保留。官方标签只是起始印象，近期真实经历优先。角色可根据已经发生的相处，分别写下对另一个人的印象；两个方向独立保存，不用数值计算好感。未获现场对话回应的邀约在下一时段作为留言送达；只有实际参与偶遇对话的人会记住共同经历。角色仍可拒绝、改约或独处。新庭院从更符合各人日常的地点开始；旧版浏览器存档仍可继续使用，不重置现有位置。
 
-公开版使用十三人的印象符号，例如樱的樱花；不包含角色头像原图。原图属于《崩坏3》的权利人，从 Wiki 获取并注明来源不等于取得独立再分发授权；依照[《崩坏3》同人衍生作品创作指引 V3.0](https://bh3.mihoyo.com/news/693/120990)，本项目作为非商业同人作品发布，官方素材及角色权利仍归权利人所有。公开仓库忽略 `public/portraits/`，`npm run build:public` 也不会将其中图片放入构建产物。本机个人版本可在 `.env.local` 设置 `VITE_COURTYARD_LOCAL_PORTRAITS=true` 使用自行持有的头像文件；该配置和图片都不会进入公开仓库。界面的“场景”视图展示十三人的上次位置，点击人物可看档案，点击地点可筛选记录；“房间”视图仍可切换。有至少两天记录时可拖动日期滑杆回看当天事件和居民结束时的位置；历史回看暂不显示物品状态。
+公开版使用十三人的印象符号，例如樱的樱花；不包含角色头像原图。原图属于《崩坏3》的权利人，从 Wiki 获取并注明来源不等于取得独立再分发授权；依照[《崩坏3》同人衍生作品创作指引 V3.0](https://bh3.mihoyo.com/news/693/120990)，本项目作为非商业同人作品发布，官方素材及角色权利仍归权利人所有。公开仓库忽略 `public/portraits/`，`npm run build:public` 也不会将其中图片放入构建产物。本机个人版本可在 `.env.local` 设置 `VITE_COURTYARD_LOCAL_PORTRAITS=true` 使用自行持有的头像文件；该配置和图片都不会进入公开仓库。界面的“场景”视图展示十三人的上次位置，点击人物可看档案，点击地点可筛选记录；“房间”视图仍可切换。有至少两天记录时可拖动日期滑杆回看当天事件、居民位置及有历史记录的物品状态；选定已完成的一天可创建独立分叉。
 
 角色演绎参考了 Wiki 的 [爱莉希雅台词](https://honkaiimpact3.fandom.com/wiki/Elysia/Quotes)、[梅比乌斯台词](https://honkaiimpact3.fandom.com/wiki/Mobius/Quotes)、[帕朵菲莉丝台词](https://honkaiimpact3.fandom.com/wiki/Pardofelis/Quotes)、[科斯魔乐土对白](https://honkaiimpact3.fandom.com/wiki/Elysian_Realm/Episodes/Kosma)、[伊甸故事](https://honkaiimpact3.fandom.com/wiki/Eden/Story)、[维尔薇故事](https://honkaiimpact3.fandom.com/wiki/Vill-V/Story)与各角色 Story/Personality 条目；这些资料提供性格线索，庭院里的当日事件、情境样例和具体对话仍由模拟生成。第一版保留轻松日常设定，因此不会照搬原作的战争与伤亡经历。
 
 ## 本机运行
 
-需要 Node.js 22+，以及可访问所选文本模型的 OpenAI 兼容 Responses API。运行后点击右上角“AI 设置”，填写 API 地址（通常以 `/v1` 结尾）、密钥和模型 ID。密钥只保存在当前浏览器标签页的 `sessionStorage`，不会写入仓库或构建文件；该页面的脚本能读取密钥，请只在可信的本机页面输入，不要把自己的密钥预填进公开网站。保存设置不发起付费请求，点击生成才调用接口。思考强度固定为 `low`，所选接口和模型也需要支持 Responses API、JSON 输出以及此参数。当前线路已验证 `gpt-5.6-sol`。若想继续沿用本机环境变量，可复制 `.env.example` 为 `.env.local` 并填写 `COURTYARD_API_URL`、`COURTYARD_API_KEY` 和 `COURTYARD_MODEL`；网页设置会覆盖这些本机默认值。
+需要 Node.js 22+，以及可访问所选文本模型的 OpenAI 兼容 Responses 或 Chat Completions API。运行后点击右上角“AI 设置”，选择接口格式并填写 API 地址（通常以 `/v1` 结尾）、密钥和模型 ID。本机 Ollama 可选 Chat Completions、填写 `http://127.0.0.1:11434/v1` 并留空密钥；模型需支持 JSON 输出。密钥只保存在当前浏览器标签页的 `sessionStorage`，不会写入仓库或构建文件；该页面的脚本能读取密钥，请只在可信的本机页面输入，不要把自己的密钥预填进公开网站。保存设置不发起付费请求，点击生成才调用接口。Responses 模式的思考强度固定为 `low`，所选接口和模型需要支持这一参数。当前线路已验证 `gpt-5.6-sol`。若想沿用本机环境变量，可复制 `.env.example` 为 `.env.local` 并填写 `COURTYARD_API_URL`、`COURTYARD_API_KEY` 和 `COURTYARD_MODEL`；Chat 模式另设 `COURTYARD_API_STYLE=chat`。网页设置会覆盖这些本机默认值。
 
 ```sh
 npm install
@@ -23,7 +23,7 @@ npm run dev -- --port 5180
 
 ## 公开版
 
-公开仓库默认不包含头像文件，也不包含 `.env.local`。运行 `npm run build:public` 生成 `dist-public/`，用 `npm run preview:public -- --port 5181` 本机预览。公开静态版由浏览器直接请求用户填写的 API 地址，供应商必须允许浏览器跨域请求；如果不允许，使用上面的本机开发服务。不要把自己的 API 密钥写进 HTML、环境变量 `VITE_*` 或部署平台的公开构建配置。
+公开仓库默认不包含头像文件，也不包含 `.env.local`。运行 `npm run build:public` 生成 `dist-public/`，用 `npm run preview:public -- --port 5181` 本机预览。部署到子路径时先设 `COURTYARD_BASE_PATH=/你的路径/` 再构建。公开静态版由浏览器直接请求用户填写的 API 地址，供应商必须允许浏览器跨域请求；如果不允许，使用上面的本机开发服务。不要把自己的 API 密钥写进 HTML、环境变量 `VITE_*` 或部署平台的公开构建配置。
 
 本仓库的自有程序代码以 [MIT 许可证](LICENSE)发布；《崩坏3》的角色、名称、设定与官方关系资料不属于本仓库的 MIT 授权范围。此项目不是米哈游官方作品，也不暗示获得官方认可。非商业同人展示仍需遵守官方指引及适用规则。
 
@@ -32,4 +32,4 @@ npm run dev -- --port 5180
 - 每次推进通常请求 13 次个人行动，另对每个有至少两人的地点请求一次偶遇，夜晚再请求一次晚饭。个人行动格式无效时最多重试一次，限流或临时服务故障最多重试两次；单次请求的输出上限为 1100 token，思考强度固定为 `low`。中途暂停会保存已完成的个人行动，下次从断点继续。
 - 本应用不购买或部署服务器，但 API 请求会按提供商价格产生费用；实际费用由提供商的模型定价和 token 用量决定，请在提供商侧设置消费上限。应用不提供跨应用账单保护。
 - “当事人的想法”是角色愿意公开的想法，不是模型私有推理。偶遇只生成在场者的对话，不再另写可能与物品状态矛盾的“共同看见”；旧存档中的这类摘要仍保留在数据里，但界面不再当成现场事实展示。
-- 存档留在当前浏览器的 localStorage，可手动导出或导入 JSON；“重新开始”会覆盖当前存档，浏览器清理站点数据也会删除存档。访客可在庭院公告板留言，角色是否读到或回应由其自行决定。
+- 完整存档保存在当前浏览器的 IndexedDB；旧版 localStorage 存档首次打开时会迁移。顶栏可按需导出或导入 JSON，也可导出最近 30 天的 Markdown 月刊；“重新开始”只覆盖当前分支。浏览器清理站点数据仍会删除本地存档，请自行保留 JSON 备份。访客可在公告板留言和挪动公共小物件，角色是否读到或回应由其自行决定。

@@ -15,13 +15,9 @@ const intent: Intent = {
 
 function renderWorld(world: World): string {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: { getItem: () => JSON.stringify(world) },
-  });
-  try {
-    return renderToStaticMarkup(createElement(App));
-  } finally {
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null } });
+  try { return renderToStaticMarkup(<App initialWorld={world} />); }
+  finally {
     if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
     else Reflect.deleteProperty(globalThis, 'localStorage');
   }
@@ -62,6 +58,20 @@ test('行动先说简短概述，具体经过可展开；旧记录仍可读', ()
   assert.doesNotMatch(shortDetail, /看看具体经过/);
   const pending = renderToStaticMarkup(createElement(SceneDetail, { scene: { ...action, kind: 'pending' }, onClose: () => {} }));
   assert.doesNotMatch(pending, /我做了什么/);
+});
+
+test('便条与留白日使用各自的展示形式', () => {
+  const world = createWorld();
+  for (const person of PEOPLE) world.pending[person.id] = intent;
+  const action = applyPhase(world, []).scenes[0];
+  assert.equal(action.kind, 'action');
+  if (action.kind !== 'action') return;
+  const note = renderToStaticMarkup(createElement(SceneDetail, { scene: { ...action, form: 'note', summary: '今晚餐桌见呀。', quote: '给你留了位置。', goal: '', observation: '', interpretation: '' }, onClose: () => {} }));
+  assert.match(note, /留下的便条/);
+  assert.doesNotMatch(note, /心里话|后来怎样|想做的事/);
+  const silence = renderToStaticMarkup(createElement(SceneDetail, { scene: { ...action, form: 'silence', summary: '今天想一个人待着。', goal: '', observation: '', interpretation: '', quote: '', next: '', steps: [] }, onClose: () => {} }));
+  assert.match(silence, /这一刻/);
+  assert.doesNotMatch(silence, /看看具体经过|接下来|心里话/);
 });
 
 test('共同晚饭展示到场、缺席和实际对话', () => {

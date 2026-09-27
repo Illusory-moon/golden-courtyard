@@ -2,17 +2,16 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { copyFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { apiEndpoint, DEFAULT_MODEL, upstreamBody, type ApiStyle } from './src/upstream.ts';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const baseUrl = env.COURTYARD_API_URL?.trim().replace(/\/+$/, '');
   const apiKey = env.COURTYARD_API_KEY?.trim();
-  const model = env.COURTYARD_MODEL?.trim() || 'gpt-5.6-sol';
-  function endpointFor(value: string): string {
-    const trimmed = value.replace(/\/+$/, '');
-    return trimmed.endsWith('/responses') ? trimmed : `${trimmed}/responses`;
-  }
+  const model = env.COURTYARD_MODEL?.trim() || DEFAULT_MODEL;
+  const apiStyle: ApiStyle = env.COURTYARD_API_STYLE?.trim() === 'chat' ? 'chat' : 'responses';
   return {
+    base: env.COURTYARD_BASE_PATH?.trim() || '/',
     plugins: [react(), ...(mode === 'public' ? [{
       name: 'public-courtyard-background',
       async closeBundle() { await copyFile(resolve('public/courtyard.svg'), resolve('dist-public/courtyard.svg')); },
@@ -21,7 +20,7 @@ export default defineConfig(({ mode }) => {
       configureServer(server) {
         server.middlewares.use('/api/health', (_request, response) => {
           response.setHeader('Content-Type', 'application/json');
-          response.end(JSON.stringify({ ready: !!(baseUrl && apiKey), model }));
+          response.end(JSON.stringify({ ready: !!baseUrl, model }));
         });
         server.middlewares.use('/api/chat', async (request, response) => {
           response.setHeader('Content-Type', 'application/json');
@@ -37,22 +36,24 @@ export default defineConfig(({ mode }) => {
               if (size > 128_000) throw new Error('request_too_large');
               chunks.push(chunk);
             }
-            const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages?: unknown; settings?: { apiUrl?: unknown; apiKey?: unknown; model?: unknown } | null };
+            const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages?: unknown; settings?: { apiUrl?: unknown; apiKey?: unknown; model?: unknown; apiStyle?: unknown } | null };
             if (!Array.isArray(payload.messages) || payload.messages.length !== 2) throw new Error('invalid_messages');
             const rawSettings = payload.settings;
-            if (rawSettings && (typeof rawSettings.apiUrl !== 'string' || typeof rawSettings.apiKey !== 'string' || typeof rawSettings.model !== 'string')) throw new Error('invalid_settings');
-            const custom = rawSettings as { apiUrl: string; apiKey: string; model: string } | null | undefined;
+            if (rawSettings && (typeof rawSettings.apiUrl !== 'string' || typeof rawSettings.apiKey !== 'string' || typeof rawSettings.model !== 'string'
+              || (rawSettings.apiStyle !== undefined && !['responses', 'chat'].includes(String(rawSettings.apiStyle))))) throw new Error('invalid_settings');
+            const custom = rawSettings as { apiUrl: string; apiKey: string; model: string; apiStyle?: ApiStyle } | null | undefined;
             const chosenUrl = custom?.apiUrl?.trim() || baseUrl;
             const chosenKey = custom ? custom.apiKey?.trim() : apiKey;
             const chosenModel = custom?.model?.trim() || model;
+            const chosenStyle = custom?.apiStyle ?? apiStyle;
             if (!chosenUrl) { response.statusCode = 503; response.end('{"error":"api_not_configured"}'); return; }
             const parsedUrl = new URL(chosenUrl);
             if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash ||
               (parsedUrl.protocol !== 'https:' && !(parsedUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsedUrl.hostname)))) throw new Error('invalid_settings');
-            const upstream = await fetch(endpointFor(chosenUrl), {
+            const upstream = await fetch(apiEndpoint(chosenUrl, chosenStyle), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', ...(chosenKey ? { Authorization: `Bearer ${chosenKey}` } : {}) },
-              body: JSON.stringify({ model: chosenModel, input: payload.messages, reasoning: { effort: 'low' }, text: { format: { type: 'json_object' } }, max_output_tokens: 1100 }),
+              body: JSON.stringify(upstreamBody(chosenModel, payload.messages, chosenStyle)),
               signal: AbortSignal.timeout(120_000),
             });
             response.statusCode = upstream.status;
